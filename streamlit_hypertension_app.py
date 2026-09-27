@@ -5,7 +5,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import shap
 import joblib
-
 plt.ioff()
 st.set_page_config(page_title="🩺高血压风险筛查系统", layout="wide")
 st.title("🩺 高血压风险智能筛查与可解释分析系统")
@@ -58,7 +57,6 @@ def preprocess_data(df_raw):
         df["BP_History"] = df["BP_History"].map(bp_map_ui2val).map(bp_str2num)
     if "Smoking_Status" in df.columns and df["Smoking_Status"].dtype == object:
         df["Smoking_Status"] = df["Smoking_Status"].map(smoke_map_ui2val).map(smoke_str2num)
-
     df = df.reindex(columns=feature_cols, fill_value=0)
     df = df.apply(pd.to_numeric, errors="coerce").fillna(0)
     return df[feature_cols]
@@ -74,7 +72,7 @@ def plot_shap_summary(X_data, df_model, max_show=100):
     st.pyplot(fig)
     plt.close(fig)
 
-# 单样本解析函数：高危(↑)，保护(↓)
+# 单样本解析函数：高危(↑)，保护(↓) 【修复重复输出】
 def parse_single_result(X_row, raw_origin_bp_text, raw_origin_smoke_text):
     shap_values = explainer.shap_values(X_row)
     sample_shap = shap_values[0]
@@ -83,17 +81,6 @@ def parse_single_result(X_row, raw_origin_bp_text, raw_origin_smoke_text):
     raw_data = X_row.iloc[0]
     risk_desc_list, protect_desc_list = [], []
 
-    name_mapping = {
-        "Age": "年龄",
-        "Salt_Intake": "盐摄入量",
-        "Stress_Score": "压力评分",
-        "Sleep_Duration": "睡眠时长",
-        "BMI": "BMI",
-        "Exercise_Level": "运动水平",
-        "Family_History":"家族病史",
-        "BP_History": "血压病史等级",
-        "Smoking_Status": "吸烟状态"
-    }
     threshold = {
         "Age": 45,
         "Salt_Intake": 5,
@@ -180,21 +167,6 @@ def parse_single_result(X_row, raw_origin_bp_text, raw_origin_smoke_text):
                 else:
                     protect_desc_list.append(f"{desc}(↓)")
 
-    # 追加文本同步调换箭头
-    bp_raw = raw_origin_bp_text
-    if bp_raw == "高血压":
-        risk_desc_list.append("既往存在高血压病史(↑)")
-    elif bp_raw == "高血压前期":
-        risk_desc_list.append("既往处于高血压前期(↑)")
-    elif bp_raw == "正常":
-        protect_desc_list.append("既往自述血压正常(↓)")
-
-    smoke_raw = raw_origin_smoke_text
-    if smoke_raw == "有吸烟习惯":
-        risk_desc_list.append("有吸烟习惯(↑)")
-    elif smoke_raw == "没有吸烟习惯":
-        protect_desc_list.append("无吸烟习惯(↓)")
-
     risk_text = "、".join(risk_desc_list) if risk_desc_list else "无显著风险因素"
     protect_text = "、".join(protect_desc_list) if protect_desc_list else "无明显保护因素"
     return risk_text, protect_text, sample_shap
@@ -231,7 +203,12 @@ if menu == "单人风险预测":
                 "Smoking_Status": smoke_status
             }
             df_input = preprocess_data(pd.DataFrame([person_data]))
-            prob = model.predict_proba(df_input)[0, 1]
+            # 硬规则：既往血压选高血压，强制概率100%
+            if bp_history == "高血压":
+                prob = 1.0
+            else:
+                prob = model.predict_proba(df_input)[0, 1]
+
             risk_result = risk_level(prob)
             risk_text, protect_text, sample_shap = parse_single_result(df_input, bp_history, smoke_status)
 
@@ -250,7 +227,6 @@ if menu == "单人风险预测":
         st.write(f"**健康建议：** {advice}")
         st.caption("本报告基于机器学习模型预测，仅作为流行病学健康筛查参考，不能替代临床医生诊断。")
         st.markdown("说明：(↑)代表流行病学高危因素（升高患病风险）；(↓)代表流行病学保护性因素（降低患病风险）。")
-
         st.subheader("🔍 特征贡献SHAP可视化")
         plot_shap_summary(df_input, df_input)
 
@@ -303,6 +279,7 @@ elif menu == "👥多人在线录入分析":
             "Smoking_Status": st.column_config.SelectboxColumn("吸烟", options=["没有吸烟习惯", "有吸烟习惯"], width=160),
         }
     )
+
     col_btn1, col_btn2 = st.columns([1, 1])
     with col_btn1:
         run_batch = st.button("🚀 执行多员批量风险预测")
@@ -313,6 +290,7 @@ elif menu == "👥多人在线录入分析":
             file_name="多人录入模板.csv",
             mime="text/csv"
         )
+
     if run_batch:
         with st.spinner("正在批量计算..."):
             st.session_state.multi_person_df = edited_df
@@ -326,6 +304,11 @@ elif menu == "👥多人在线录入分析":
                 st.stop()
             df_model_input = preprocess_data(df_valid_raw.drop(columns=["姓名"]))
             batch_prob = model.predict_proba(df_model_input)[:, 1]
+            # 多人批量硬规则：既往血压=高血压强制1.0
+            for idx in range(len(df_valid_raw)):
+                if df_valid_raw.iloc[idx]["BP_History"] == "高血压":
+                    batch_prob[idx] = 1.0
+
             output_df = df_valid_raw.copy()
             output_df["患病预测概率(%)"] = np.round(batch_prob * 100, 1)
             output_df["风险等级"] = [risk_level(p) for p in batch_prob]
@@ -338,11 +321,9 @@ elif menu == "👥多人在线录入分析":
             file_name="多人批量预测结果.csv",
             mime="text/csv"
         )
-
         st.subheader("🔍全局SHAP特征贡献图（全部样本汇总）")
         plot_shap_summary(df_model_input, df_model_input)
         st.markdown("说明：(↑)代表流行病学高危因素（升高患病风险）；(↓)代表流行病学保护性因素（降低患病风险）。")
-
         st.markdown("### 📄展开查看每一位人员完整个人风险报告")
         for i, row in output_df.iterrows():
             with st.expander(f"【{row['姓名']}】概率：{row['患病预测概率(%)']}% | {row['风险等级']}"):
@@ -358,7 +339,6 @@ elif menu == "👥多人在线录入分析":
                     advice = "建议定期监测血压，减少高盐饮食，控制体重，规律运动。"
                 else:
                     advice = "⚠️请尽快前往医院心内科完成相关检查，严格控盐，密切监测血压，遵从临床医生指导。"
-
                 st.write(f"**预估患病概率：{prob_i*100:.1f}%**")
                 st.write(f"**风险等级：{res_level}**")
                 st.write(f"**主要风险因素：** {risk_text}")
@@ -392,6 +372,11 @@ elif menu == "📂CSV数据集上传分析":
                     st.stop()
                 df_batch_encode = preprocess_data(df_valid)
                 batch_prob = model.predict_proba(df_batch_encode)[:, 1]
+                # CSV硬规则：既往血压=高血压强制100%
+                for idx in range(len(df_valid)):
+                    if df_valid.iloc[idx]["BP_History"] == "高血压":
+                        batch_prob[idx] = 1.0
+
                 result_df = df_valid.copy()
                 result_df["患病预测概率(%)"] = np.round(batch_prob * 100, 1)
                 result_df["风险等级"] = [risk_level(p) for p in batch_prob]
@@ -404,11 +389,9 @@ elif menu == "📂CSV数据集上传分析":
                 file_name="csv上传批量预测结果.csv",
                 mime="text/csv"
             )
-
             st.subheader("🔍全局SHAP特征贡献图")
             plot_shap_summary(df_batch_encode, df_batch_encode)
             st.markdown("说明：(↑)代表流行病学高危因素（升高患病风险）；(↓)代表流行病学保护性因素（降低患病风险）。")
-
             st.markdown("### 📄展开查看CSV中每一条样本完整个人风险报告")
             for i, row in result_df.iterrows():
                 with st.expander(f"【第{i+1}条样本】概率：{row['患病预测概率(%)']}% | {row['风险等级']}"):
@@ -424,7 +407,6 @@ elif menu == "📂CSV数据集上传分析":
                         advice = "建议定期监测血压，减少高盐饮食，控制体重，规律运动。"
                     else:
                         advice = "⚠️请尽快前往医院心内科完成相关检查，严格控盐，密切监测血压，遵从临床医生指导。"
-
                     st.write(f"**预估患病概率：{prob_i*100:.1f}%**")
                     st.write(f"**风险等级：{res_level}**")
                     st.write(f"**主要风险因素：** {risk_text}")
