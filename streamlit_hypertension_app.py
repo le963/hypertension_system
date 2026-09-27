@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import shap
 import joblib
+
 plt.ioff()
 st.set_page_config(page_title="🩺高血压风险筛查系统", layout="wide")
 st.title("🩺 高血压风险智能筛查与可解释分析系统")
@@ -28,7 +29,6 @@ bp_str2num = {"Normal":0, "Prehypertension":1, "Hypertension":2}
 smoke_map_ui2val = {"没有吸烟习惯": "Non‑Smoker", "有吸烟习惯": "Smoker"}
 smoke_str2num = {"Non‑Smoker":0, "Smoker":1}
 
-# 和自动生成风险报告.py完全一致风险分层
 def risk_level(p):
     if p < 0.3:
         return "低风险"
@@ -44,21 +44,19 @@ def check_empty_rows(df):
 
 def preprocess_data(df_raw):
     df = df_raw.copy()
-    df = df.fillna({
-        "Age": 0, "Salt_Intake": 0, "Stress_Score": 0, "Sleep_Duration": 0, "BMI": 0,
-        "Exercise_Level": 1, "Family_History": 0,
-        "BP_History": "Normal", "Smoking_Status": "Non‑Smoker"
-    })
-    if "Exercise_Level" in df.columns and df["Exercise_Level"].dtype == object:
-        df["Exercise_Level"] = df["Exercise_Level"].map(exercise_map_ui2val)
-    if "Family_History" in df.columns and df["Family_History"].dtype == object:
-        df["Family_History"] = df["Family_History"].map(family_map_ui2val)
-    if "BP_History" in df.columns and df["BP_History"].dtype == object:
-        df["BP_History"] = df["BP_History"].map(bp_map_ui2val).map(bp_str2num)
-    if "Smoking_Status" in df.columns and df["Smoking_Status"].dtype == object:
-        df["Smoking_Status"] = df["Smoking_Status"].map(smoke_map_ui2val).map(smoke_str2num)
-    df = df.reindex(columns=feature_cols, fill_value=0)
-    df = df.apply(pd.to_numeric, errors="coerce").fillna(0)
+
+    map_exercise = {"低":1, "中":2, "高":3}
+    map_family = {"无高血压家族史":0, "有高血压家族史":1}
+    map_bp = {"正常":0, "高血压前期":1, "高血压":2}
+    map_smoke = {"没有吸烟习惯":0, "有吸烟习惯":1}
+
+    df = df.replace({"Exercise_Level": map_exercise})
+    df = df.replace({"Family_History": map_family})
+    df = df.replace({"BP_History": map_bp})
+    df = df.replace({"Smoking_Status": map_smoke})
+
+    df = df.apply(pd.to_numeric, errors="coerce")
+    df = df.fillna(0)
     return df[feature_cols]
 
 def plot_shap_summary(X_data, df_model, max_show=100):
@@ -72,7 +70,6 @@ def plot_shap_summary(X_data, df_model, max_show=100):
     st.pyplot(fig)
     plt.close(fig)
 
-# 单样本解析函数：高危(↑)，保护(↓) 【修复重复输出】
 def parse_single_result(X_row, raw_origin_bp_text, raw_origin_smoke_text):
     shap_values = explainer.shap_values(X_row)
     sample_shap = shap_values[0]
@@ -203,7 +200,6 @@ if menu == "单人风险预测":
                 "Smoking_Status": smoke_status
             }
             df_input = preprocess_data(pd.DataFrame([person_data]))
-            # 硬规则：既往血压选高血压，强制概率100%
             if bp_history == "高血压":
                 prob = 1.0
             else:
@@ -302,9 +298,9 @@ elif menu == "👥多人在线录入分析":
             if df_valid_raw.shape[0] == 0:
                 st.error("❌无有效输入数据。")
                 st.stop()
-            df_model_input = preprocess_data(df_valid_raw.drop(columns=["姓名"]))
+            df_for_model = df_valid_raw.drop(columns=["姓名"]).copy()
+            df_model_input = preprocess_data(df_for_model)
             batch_prob = model.predict_proba(df_model_input)[:, 1]
-            # 多人批量硬规则：既往血压=高血压强制1.0
             for idx in range(len(df_valid_raw)):
                 if df_valid_raw.iloc[idx]["BP_History"] == "高血压":
                     batch_prob[idx] = 1.0
@@ -372,7 +368,6 @@ elif menu == "📂CSV数据集上传分析":
                     st.stop()
                 df_batch_encode = preprocess_data(df_valid)
                 batch_prob = model.predict_proba(df_batch_encode)[:, 1]
-                # CSV硬规则：既往血压=高血压强制100%
                 for idx in range(len(df_valid)):
                     if df_valid.iloc[idx]["BP_History"] == "高血压":
                         batch_prob[idx] = 1.0
